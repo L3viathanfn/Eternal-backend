@@ -1,0 +1,283 @@
+
+
+
+---
+
+**1. package.json**
+
+```json
+{
+  "name": "eternal-backend",
+  "version": "9.10.0",
+  "description": "ETERNAL Backend - Chapter 1, Season 9, high quality Node.js backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.0",
+    "mongoose": "^7.0.5"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
+```
+
+---
+
+**2. .env**
+
+```
+PORT=5000
+MONGO_URI=your_mongodb_connection_string
+JWT_SECRET=your_super_secret_key
+NODE_ENV=development
+```
+
+---
+
+**3. server.js**
+
+```javascript
+console.log('ETERNAL BACKEND - Chapter 1, Season 9 (v9.10)');
+
+const express = require('express');
+const dotenv = require('dotenv');
+const connectDB = require('./config/db');
+const userRoutes = require('./routes/users');
+const authRoutes = require('./routes/auth');
+const { errorHandler } = require('./middleware/errorMiddleware');
+const cors = require('cors');
+
+dotenv.config();
+connectDB();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Routes
+app.use('/api/users', userRoutes);
+app.use('/api/auth', authRoutes);
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.send('Welcome to ETERNAL BACKEND - Chapter 1, Season 9!');
+});
+
+// Error middleware
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`ETERNAL Backend running on http://localhost:${PORT} - v9.10`));
+```
+
+---
+
+**4. config/db.js**
+
+```javascript
+const mongoose = require('mongoose');
+
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(process.env.MONGO_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log(`MongoDB Connected: ${conn.connection.host}`);
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+  }
+};
+
+module.exports = connectDB;
+```
+
+---
+
+**5. models/User.js**
+
+```javascript
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+const userSchema = mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+}, { timestamps: true });
+
+userSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) return next();
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+  next();
+});
+
+userSchema.methods.matchPassword = async function(enteredPassword) {
+  return await bcrypt.compare(enteredPassword, this.password);
+};
+
+module.exports = mongoose.model('User', userSchema);
+```
+
+---
+
+**6. utils/generateToken.js**
+
+```javascript
+const jwt = require('jsonwebtoken');
+
+const generateToken = (id) => {
+  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+};
+
+module.exports = generateToken;
+```
+
+---
+
+**7. middleware/authMiddleware.js**
+
+```javascript
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+
+const protect = async (req, res, next) => {
+  let token;
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    try {
+      token = req.headers.authorization.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      req.user = await User.findById(decoded.id).select('-password');
+      next();
+    } catch (error) {
+      res.status(401).json({ message: 'Not authorized, token failed' });
+    }
+  }
+  if (!token) {
+    res.status(401).json({ message: 'Not authorized, no token' });
+  }
+};
+
+module.exports = { protect };
+```
+
+---
+
+**8. middleware/errorMiddleware.js**
+
+```javascript
+const errorHandler = (err, req, res, next) => {
+  const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
+  res.status(statusCode).json({
+    message: err.message,
+    stack: process.env.NODE_ENV === 'production' ? null : err.stack,
+  });
+};
+
+module.exports = { errorHandler };
+```
+
+---
+
+**9. controllers/authController.js**
+
+```javascript
+const User = require('../models/User');
+const generateToken = require('../utils/generateToken');
+
+const registerUser = async (req, res) => {
+  const { name, email, password } = req.body;
+  const userExists = await User.findOne({ email });
+
+  if (userExists) return res.status(400).json({ message: 'User already exists' });
+
+  const user = await User.create({ name, email, password });
+  if (user) {
+    res.status(201).json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      token: generateToken(user._id)
+    });
+  } else {
+    res.status(400).json({ message: 'Invalid user data' });
+  }
+};
+
+const authUser = async (req, res) => {
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
+
+  if (user && (await user.matchPassword(password))) {
+    res.json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      token: generateToken(user._id)
+    });
+  } else {
+    res.status(401).json({ message: 'Invalid email or password' });
+  }
+};
+
+module.exports = { registerUser, authUser };
+```
+
+---
+
+**10. routes/auth.js**
+
+```javascript
+const express = require('express');
+const { registerUser, authUser } = require('../controllers/authController');
+const router = express.Router();
+
+router.post('/register', registerUser);
+router.post('/login', authUser);
+
+module.exports = router;
+```
+
+---
+
+**11. controllers/userController.js**
+
+```javascript
+const User = require('../models/User');
+
+const getUsers = async (req, res) => {
+  const users = await User.find().select('-password');
+  res.json(users);
+};
+
+module.exports = { getUsers };
+```
+
+---
+
+**12. routes/users.js**
+
+```javascript
+const express = require('express');
+const { getUsers } = require('../controllers/userController');
+const { protect } = require('../middleware/authMiddleware');
+const router = express.Router();
+
+router.get('/', protect, getUsers);
+
+module.exports = router;
+```
+
+---
+
+Tout est prêt pour **ETER
